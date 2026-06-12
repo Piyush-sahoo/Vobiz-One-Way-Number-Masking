@@ -16,15 +16,16 @@
 4. [How many phone numbers do you need? (the expensive truth)](#4-how-many-numbers-do-you-need)
 5. [The end-to-end story](#5-the-end-to-end-story)
 6. [Pictures of the flow](#6-pictures-of-the-flow)
-7. [The exact messages on the wire](#7-the-exact-messages-on-the-wire)
-8. [The code, line by line](#8-the-code-line-by-line)
-9. [How to run it](#9-how-to-run-it)
-10. [Connecting to your real Vobiz number](#10-connecting-to-your-real-vobiz-number)
-11. [Testing without real calls](#11-testing-without-real-calls)
-12. [What can go wrong](#12-what-can-go-wrong)
-13. [Pros, cons, and when to choose this](#13-pros-cons-and-when-to-choose-this)
-14. [FAQ](#14-faq)
-15. [Glossary](#15-glossary)
+7. [Architecture](#7-architecture)
+8. [The exact messages on the wire](#8-the-exact-messages-on-the-wire)
+9. [The code, line by line](#9-the-code-line-by-line)
+10. [How to run it](#10-how-to-run-it)
+11. [Connecting to your real Vobiz number](#11-connecting-to-your-real-vobiz-number)
+12. [Testing without real calls](#12-testing-without-real-calls)
+13. [What can go wrong](#13-what-can-go-wrong)
+14. [Pros, cons, and when to choose this](#14-pros-cons-and-when-to-choose-this)
+15. [FAQ](#15-faq)
+16. [Glossary](#16-glossary)
 
 ---
 
@@ -167,7 +168,64 @@ identity does not affect the lookup at all.
 
 ---
 
-## 7. The exact messages on the wire
+## 7. Architecture
+
+One-way masking uses the same three-step Vobiz flow as every other strategy. The
+key property: **your server holds the mapping; Vobiz stores nothing.** Vobiz only
+asks your Answer URL "who does this call go to?" on each call.
+
+### Components and call flow
+
+```
+  Field Agent /            +-----------------------+         +----------------------+
+  any caller               |     VOBIZ PLATFORM    |         |     YOUR SERVER      |
+  +---------+   dial M      |  - owns the DIDs      |  POST   |  - masking->dest map |
+  | caller  | -----------> |  - intercepts call    | /answer |  - resolves by To    |
+  +---------+   (A-leg)     |  - queries Answer URL | ------> |    (ignores caller)  |
+                           |  - bridges the legs   |         |  - returns Dial XML  |
+                           |  - stores NOTHING     | <------ |  - stateless         |
+       ^                   +-----------+-----------+   XML   +----------------------+
+       |                               |  <Dial callerId="M"><Number>destination</Number></Dial>
+       |                               v (B-leg)
+       |                       +---------------+
+       +---- bridged voice ----|  Destination  |  rings, sees M as the caller ID
+                               +---------------+
+```
+
+### The three steps
+
+1. **Inbound trigger (A-leg).** Any caller dials a masking number `M`. Vobiz owns
+   `M`, intercepts the call, and POSTs the details (`From`, `To=M`) to your
+   **Answer URL**.
+2. **XML logic response.** Your server looks up `M` in its `masking -> destination`
+   table — **the caller (`From`) is ignored** — and returns
+   `<Dial callerId="M"><Number>destination</Number></Dial>`.
+3. **Call bridging (B-leg).** Vobiz places a second call to the destination,
+   showing `M` as the caller ID, and bridges the two legs. The destination never
+   sees the real caller; the caller never learns the real destination.
+
+### Where state lives
+
+| Concern | Owner |
+|---------|-------|
+| Phone numbers (DIDs) | Vobiz |
+| answer_url / webhook routing (the Application) | Vobiz |
+| `masking -> destination` mapping | **Your server** (`mappings.py`, from `.env`) |
+| Call bridging / media | Vobiz |
+| Per-call state / sessions | **None** — one-way needs no session at all |
+
+### Why one-way has the simplest architecture
+
+Unlike the two-way and session strategies, there is **no session store and no
+caller check**. Resolution is a single dictionary lookup keyed on the dialled
+number, so each request is fully **stateless and idempotent** — Vobiz can retry
+safely, and you can run many instances behind a load balancer with no shared
+state. The trade-off lives entirely in cost: one DID per destination (see
+section 4).
+
+---
+
+## 8. The exact messages on the wire
 
 ### Vobiz → your Answer URL
 
@@ -204,7 +262,7 @@ If someone dials a masking number you have no row for:
 
 ---
 
-## 8. The code, line by line
+## 9. The code, line by line
 
 This is the simplest of the four strategies. Two tiny files.
 
@@ -249,7 +307,7 @@ we know it, we dial the destination using `To` itself as the caller ID. Done.
 
 ---
 
-## 9. How to run it
+## 10. How to run it
 
 ```bash
 cd "number-masking-python"
@@ -262,7 +320,7 @@ uvicorn app:app --reload --port 8003
 
 ---
 
-## 10. Connecting to your real Vobiz number
+## 11. Connecting to your real Vobiz number
 
 1. In `mappings.py`, map your real number to the destination you want it to
    forward to, e.g. `"919000000001": "919876511111"` (calls to your Vobiz number
@@ -279,7 +337,7 @@ rent more numbers.
 
 ---
 
-## 11. Testing without real calls
+## 12. Testing without real calls
 
 ```bash
 python - <<'PY'
@@ -302,7 +360,7 @@ pytest -q
 
 ---
 
-## 12. What can go wrong
+## 13. What can go wrong
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -313,7 +371,7 @@ pytest -q
 
 ---
 
-## 13. Pros, cons, and when to choose this
+## 14. Pros, cons, and when to choose this
 
 **Pros**
 - **Most flexible for callers** — any source number works (registered or not).
@@ -332,7 +390,7 @@ dial in from any phone without registration or PINs.
 
 ---
 
-## 14. FAQ
+## 15. FAQ
 
 **Q: If it's "one-way", how do both people talk?**
 A: The *conversation* is two-way as always. "One-way" only describes how the
@@ -352,7 +410,7 @@ A: This strategy allows all by default. If you need blocking, add a check on
 
 ---
 
-## 15. Glossary
+## 16. Glossary
 
 - **One-way mapping:** destination is chosen by the dialled masking number only;
   the caller's identity is ignored.
