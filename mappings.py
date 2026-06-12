@@ -34,6 +34,17 @@ for _pair in _RAW.split(","):
         MAPPINGS[_m.strip()] = _d.strip()
 
 
+def _norm(number: str) -> str:
+    """Normalise a phone number: digits only, last 10 digits. Tolerant of '+',
+    spaces, leading 0, and a missing country code."""
+    digits = "".join(c for c in (number or "") if c.isdigit())
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+# Pre-normalise keys so the lookup is format-independent.
+_NORM_MAPPINGS = {_norm(k): v for k, v in MAPPINGS.items()}
+
+
 def resolve(masking_number: str) -> str | None:
     """Return the destination for a masking number, or None if unknown."""
-    return MAPPINGS.get(masking_number)
+    return _NORM_MAPPINGS.get(_norm(masking_number))
